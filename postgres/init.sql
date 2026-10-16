@@ -1,0 +1,3 @@
+-- 앱 계정. 2단계에서 NOLOGIN 대상
+CREATE ROLE app LOGIN PASSWORD 'app';
+GRANT CONNECT ON DATABASE appdb TO app;

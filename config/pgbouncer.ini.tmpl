@@ -1,0 +1,21 @@
+[databases]
+appdb = host=${DB_HOST} port=5432 dbname=appdb
+
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = 6432
+unix_socket_dir =
+
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+; 관리 콘솔(가상 DB "pgbouncer") 접속 계정. PG에는 없는 계정
+admin_users = admin
+
+pool_mode = transaction
+; 클라이언트 동시성보다 작게 둬서 대기(cl_waiting)를 관찰
+default_pool_size = 5
+max_client_conn = 200
+
+ignore_startup_parameters = extra_float_digits
+log_connections = 1
+log_disconnections = 1

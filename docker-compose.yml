@@ -1,0 +1,53 @@
+# pg-old: 이관 전 DB (7계정 역할), pg-new: 이관 대상 DB (2계정 역할)
+# pgbouncer-config: ECS 사이드카처럼 설정 파일을 공유 볼륨에 렌더링하고 종료
+# pgbouncer: 공유 볼륨의 pgbouncer.ini를 읽어서 기동
+
+x-postgres: &postgres
+  image: docker.io/library/postgres:16-alpine
+  environment:
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: appdb
+  volumes:
+    - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  healthcheck:
+    test: ["CMD", "pg_isready", "-U", "postgres", "-d", "appdb"]
+    interval: 2s
+    timeout: 3s
+    retries: 15
+
+services:
+  pg-old:
+    <<: *postgres
+    command: ["postgres", "-c", "cluster_name=pg-old"]
+    ports: ["5433:5432"]
+
+  pg-new:
+    <<: *postgres
+    command: ["postgres", "-c", "cluster_name=pg-new"]
+    ports: ["5434:5432"]
+
+  pgbouncer-config:
+    image: docker.io/library/alpine:3.20
+    environment:
+      DB_HOST: ${DB_HOST:-pg-old}
+    volumes:
+      - ./config:/templates:ro
+      - pgbouncer-config:/etc/pgbouncer
+    command: ["sh", "/templates/render.sh"]
+
+  pgbouncer:
+    build: ./pgbouncer
+    depends_on:
+      pgbouncer-config:
+        condition: service_completed_successfully
+      pg-old:
+        condition: service_healthy
+      pg-new:
+        condition: service_healthy
+    volumes:
+      - pgbouncer-config:/etc/pgbouncer:ro
+    ports: ["6432:6432"]
+
+volumes:
+  pgbouncer-config:
