@@ -19,3 +19,7 @@ max_client_conn = 200
 ignore_startup_parameters = extra_float_digits
 log_connections = 1
 log_disconnections = 1
+
+; 서버 로그인 실패 후 재시도까지 대기 시간 (기본 15초)
+; NOLOGIN으로 로그인이 실패한 뒤 대상을 바꿔도 이 시간 동안은 새 서버로 붙지 않음 → 따닥 실습에선 1초로 낮춤
+server_login_retry = 1

@@ -57,6 +57,55 @@ cd client && npm install && npm start
      -c "SELECT usename, client_addr, state FROM pg_stat_activity WHERE usename = 'app';"
    ```
 
+## 2단계: 따닥 (PgBouncer 대상 교체)
+
+DB 이관(7계정 → 2계정) 전환 미팅 결론을 그대로 흉내 낸다. 앱은 PgBouncer에만 붙어 있고, 어느 DB로 갈지는 PgBouncer 설정이 정한다. CNAME처럼 DNS 반영을 기다릴 필요가 없다.
+
+```
+전: client ──▶ pgbouncer ──▶ pg-old        후: client ──▶ pgbouncer ──▶ pg-new
+```
+
+`./scripts/swap.sh` 절차
+
+1. pg-old `ALTER ROLE app NOLOGIN`: 새 로그인 거부, 기존 세션은 유지
+2. pg-old app 세션 드레인: 유휴 세션부터 종료, `DRAIN_TIMEOUT_SEC`(2초) 넘으면 전부 종료 → PgBouncer의 pg-old 재연결 실패
+3. CDC 잔여분 반영 대기: `CDC_WAIT_SEC`(1초) sleep으로 흉내
+4. 사이드카(`pgbouncer-config`)를 `DB_HOST=pg-new`로 다시 돌려 공유 볼륨의 `pgbouncer.ini` 치환
+5. `RELOAD` → PgBouncer가 pg-new로 새 서버 커넥션을 맺음
+
+2~5가 순단 구간. pg-new 쪽은 교체 전까지 연결 자체가 없어서 `NOLOGIN` 토글이 필요 없다.
+
+### 해볼 것
+
+터미널 두 개를 띄운다.
+
+```bash
+# 터미널 A
+cd client && CONCURRENCY=3 INTERVAL_MS=100 npm start
+
+# 터미널 B
+./scripts/swap.sh            # 실패 모드
+./scripts/reset.sh           # pg-old로 되돌리기
+./scripts/swap.sh --pause    # 대기 모드
+./scripts/reset.sh
+```
+
+로컬(podman) 실측 예시
+
+| 모드 | 순단 중 요청 | 클라이언트에서 보이는 것 |
+|---|---|---|
+| `swap.sh` | 바로 실패 | `28000 role "app" is not permitted to log in` → `08P01 server login has been failing` 약 2.3초 동안 63건, 이후 `backend=pg-new` |
+| `swap.sh --pause` | PgBouncer에서 대기 | 에러 0건, 쿼리 하나가 약 3.1초 걸린 뒤 `backend=pg-new` |
+
+- 시간은 대부분 `compose exec`/`run` 오버헤드(호출당 0.4초 안팎)와 `CDC_WAIT_SEC`. 실제 교체(`RELOAD`) 자체는 순간
+- `--pause`: `PAUSE appdb`가 진행 중 트랜잭션이 끝나길 기다린 뒤 서버 커넥션을 놓고, 그동안 들어온 요청은 `RESUME`까지 줄을 선다. 클라이언트의 `connectionTimeoutMillis`(5초)나 PgBouncer `query_wait_timeout`(기본 120초)보다 길어지면 그때 실패
+
+### 함정: `server_login_retry`
+
+PgBouncer는 서버 로그인이 한 번 실패하면 `server_login_retry`(기본 15초) 동안 재시도하지 않고 클라이언트에 `server login has been failing`을 돌려준다. 1번 `NOLOGIN` 때문에 로그인이 실패한 상태에서 대상을 바꾸면, `RELOAD`를 해도 이 시간이 지나야 pg-new에 붙는다. 기본값이면 순단이 15초까지 늘어난다.
+
+그래서 `config/pgbouncer.ini.tmpl`에 `server_login_retry = 1`을 넣어 두었다. 이 줄을 지우고 `docker compose up -d --force-recreate`로 다시 띄운 뒤 `swap.sh`를 돌려 보면 차이가 보인다. 운영 전환에서도 같이 챙겨야 하는 값.
+
 ### 정리
 
 ```bash
